@@ -1,3 +1,4 @@
 [submodule "themes/hugo-tufte"]
 	path = themes/hugo-tufte
-	url = https://github.com/slashformotion/hugo-tufte.git
+	url = ../hugo-tufte.git
+	branch = wkz
