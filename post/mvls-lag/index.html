@@ -1,0 +1,96 @@
+<!doctype html><html lang=en-us><head><title>wkz - Marvell LinkStreet LAG Issues</title><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name=description content="While running some kselftest-like tests on a system made up of three Marvell LinkStreet chips, I uncovered a series of issues related to offloaded link aggregates (LAGs) that are spread across multiple chips.
+The system has the following layout:
+ .--0-1-2-3-4--. .-----a sw1 | .-0-1-4-. '--5-6-7-8-9--' sw0: 6353 (Agate) CPU +---6 sw0 | sw1: 6097 (Opal+) '-2-3-5-' .--0-1-2-3-4--. sw2: 6097 (Opal+) '-----a sw2 | '--5-6-7-8-9--' Software-wise, the system is running NetBox with 5. "><link rel=canonical href=https://wkz.github.io/post/mvls-lag/><link rel=icon type=image/x-icon href=/favicon/favicon.ico><link rel=stylesheet href=https://cdn.jsdelivr.net/npm/normalize.css@8.0.1/normalize.css><link rel=stylesheet href=https://unpkg.com/purecss@2.0.6/build/pure-min.css><link rel=stylesheet href=https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.14.0/css/all.css><link rel=stylesheet href=/css/hugo-tufte.min.css><link rel=stylesheet href=/css/hugo-tufte-override.css></head><body><div id=layout class=pure-g><article class=pure-u-1><header class=brand><a href=https://wkz.github.io/><h1>wkz</h1></a><h2>/* You are not expected to understand this */</h2><nav class=menu><ul></ul></nav><hr></header><section><h1 class=content-title><a href=/post/mvls-lag/>Marvell LinkStreet LAG Issues</a></h1><span class=content-meta><i class="fa fa-calendar"></i>
+&nbsp;May 17, 2022
+&nbsp;<i class="fa fa-clock-o"></i>
+&nbsp;5 min read</span></section><section><p>While running some kselftest-like tests on a system made up of three
+Marvell LinkStreet chips, I uncovered a series of issues related to
+offloaded link aggregates (LAGs) that are spread across multiple
+chips.</p><p>The system has the following layout:</p><pre tabindex=0><code>                    .--0-1-2-3-4--.
+              .-----a     sw1     |
+        .-0-1-4-.   &#39;--5-6-7-8-9--&#39;   sw0: 6353 (Agate)
+CPU +---6  sw0  |                     sw1: 6097 (Opal+)
+        &#39;-2-3-5-&#39;   .--0-1-2-3-4--.   sw2: 6097 (Opal+)
+              &#39;-----a     sw2     |
+                    &#39;--5-6-7-8-9--&#39;
+</code></pre><p>Software-wise, the system is running
+<a href=https://github.com/westermo/netbox>NetBox</a> with 5.18 Linux kernel,
+using the <code>mv88e6xxx</code> driver to control the switch chips.</p><h1 id=inconsistent-hashing>Inconsistent Hashing</h1><p>After creating a LAG consisting of <code>sw0p1</code> and <code>sw1p1</code>, I was running
+a test where multicast was to be flooded out through the LAG. During
+that test, I observed that some groups were correctly flooded, while
+others were not.</p><p>If a packet was forced out of the LAG port<label for=sidenote-afc01021e44e632226ec05076f2d409c-0 class="margin-toggle sidenote-number"></label>
+<input type=checkbox id=sidenote-afc01021e44e632226ec05076f2d409c-0 class=margin-toggle>
+<span class=sidenote>By injecting
+a <code>FROM_CPU</code> packet on the CPU port</span>
+, it was correctly
+received on the other side. So I knew that the problem was in the
+forwarding plane of the switch.</p><p>Previously, I had run the same test, but with <code>sw1p0</code> and <code>sw2p4</code> as
+the LAG ports, without any issues. Guessing that the issue might have
+something to do with asymmetric hashing, I generated some test packets
+with <a href=https://github.com/libnet/nemesis>nemesis</a>:</p><div class=highlight><pre tabindex=0 style=color:#586e75;background-color:#eee8d5;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span><span style=color:#859900>for</span> i in <span style=color:#859900>$(</span>seq <span style=color:#2aa198;font-weight:700>0</span> 255<span style=color:#859900>)</span>; <span style=color:#859900>do</span>
+</span></span><span style=display:flex><span>	nemesis ethernet -c <span style=color:#2aa198;font-weight:700>1</span> -d eth0 -M 01:00:de:ad:00:<span style=color:#859900>$(</span><span style=color:#cb4b16>printf</span> <span style=color:#2aa198>&#39;%2.2x&#39;</span> <span style=color:#268bd2>$i</span><span style=color:#859900>)</span> <span style=color:#2aa198>\
+</span></span></span><span style=display:flex><span><span style=color:#2aa198></span>		-T 0xbbbb -P &lt;(<span style=color:#cb4b16>echo</span> testing <span style=color:#268bd2>$i</span>)
+</span></span><span style=display:flex><span><span style=color:#859900>done</span>
+</span></span></code></pre></div><p>On the receiver I observed the following results:</p><table><thead><tr><th style=text-align:right># Groups</th><th style=text-align:right># Copies</th><th style=text-align:left>Interpretation</th></tr></thead><tbody><tr><td style=text-align:right>64</td><td style=text-align:right>0</td><td style=text-align:left>Both switches assume that the designated port is on the other switch</td></tr><tr><td style=text-align:right>128</td><td style=text-align:right>1</td><td style=text-align:left>Switches are in agreement</td></tr><tr><td style=text-align:right>64</td><td style=text-align:right>2</td><td style=text-align:left>Both switches determines that the local port is the designated one</td></tr></tbody></table><p>Disabling the hashing<label for=sidenote-afc01021e44e632226ec05076f2d409c-1 class="margin-toggle sidenote-number"></label>
+<input type=checkbox id=sidenote-afc01021e44e632226ec05076f2d409c-1 class=margin-toggle>
+<span class=sidenote>By clearing
+<code>Global1:Reg7:Bit11</code></span>
+causes the devices to fall back
+to a simple XOR-based port selection. In this mode of operation,
+sending the same test packets, exactly one copy of each of the 256
+packets is received.</p><p><strong>Conclusion</strong>: The Agate uses a different hash function than the one
+on the Opal+.</p><h2 id=suggested-solution>Suggested Solution</h2><p>Opportunistically enable hashing until a configuration is encountered
+which prevents it. As a first step, you could disable hashing as soon
+as a cross-chip LAG is detected.</p><p>To support even more cases, you could also keep hashing enabled as
+long as all cross-chip LAGs are setup between compatible chips. This
+would require some more information from Marvell though, i.e. the
+groups of chips using the same hash function.</p><h1 id=dsa-tag-trunk-bit-override>DSA Tag Trunk Bit Override</h1><p>Because of the way <code>mv88e6xxx</code> handles port isolation<label for=sidenote-afc01021e44e632226ec05076f2d409c-2 class="margin-toggle sidenote-number"></label>
+<input type=checkbox id=sidenote-afc01021e44e632226ec05076f2d409c-2 class=margin-toggle>
+<span class=sidenote>Full
+disclosure: This is my fault</span>
+, frames assigned to VID 0
+ingressing on DSA ports are trapped to the CPU using the VTU policy feature.</p><p>This avoids a whole slew of issues where intermediate switches may be
+confused by looking up the DA in the ATU. Unfortunately it also means
+that the original DSA tag, which looked something like this&mldr;</p><pre tabindex=0><code>FORWARD dev:2 port:0 trunk:yes
+</code></pre><p>&mldr;is rewritten to:</p><pre tabindex=0><code>TO_CPU  dev:2 port:0 code:policy-trap
+</code></pre><p>Since there is not trunk bit in the <code>TO_CPU</code> tag, the original source
+information is lost.</p><p>Fortunately, this is only an issue for LAGs in standalone mode - as
+soon as a LAG is added to a bridge, no packets will ever be assigned
+to VID 0. If a standalone LAG is required, you can create one using a
+mode that is not possible to offload<label for=sidenote-afc01021e44e632226ec05076f2d409c-3 class="margin-toggle sidenote-number"></label>
+<input type=checkbox id=sidenote-afc01021e44e632226ec05076f2d409c-3 class=margin-toggle>
+<span class=sidenote>E.g. <code>balance-rr</code>
+for Bond interfaces</span>
+. In that case, the DSA layer in
+the kernel will fallback to a software LAG and everything will work as
+expected.</p><p><strong>Conclusion</strong>: The VTU policy feature can&rsquo;t coexist with offloaded
+standalone LAGs.</p><h2 id=suggested-solution-1>Suggested Solution</h2><p>When a LAG is created, accept the offload in the <code>mv88e6xxx</code> driver if
+it is supported, but do not actually push the configuration down to
+hardware until the LAG is attached to a bridge. Before that point, the
+&ldquo;offloading&rdquo; does very little anyway, the reason you want it offloaded
+is so that you can hardware switch packets in and out of it - in
+standalone mode all packets have to pass through the CPU anyway.</p><h1 id=atu-trunk-bit-inheritance>ATU Trunk Bit Inheritance</h1><p>When <code>mv88e6xxx</code> adds a static FDB entry to the ATU, it will reuse any
+existing ATU entry for the DA in question<label for=sidenote-afc01021e44e632226ec05076f2d409c-4 class="margin-toggle sidenote-number"></label>
+<input type=checkbox id=sidenote-afc01021e44e632226ec05076f2d409c-4 class=margin-toggle>
+<span class=sidenote>This is most
+likely because it makes the code reusable for MDB operations</span>
+.</p><p>Unfortunately, the Trunk bit of the ATU entry is not cleared before
+entry is written back with the new port information.</p><p><strong>Example</strong>: We start with the following bridge setup:</p><pre tabindex=0><code>  br0
+  / \
+ / lag0  lag1
+&#39;   /\    /\
+0  1  2  3  4
+   |  &#39;--&#39;  |
+   &#39;--------&#39;
+</code></pre><p>Then we send a packet from <code>lag1</code>, which is physically looped back to
+<code>lag0</code>, where it is received and learned by the ATU.</p><p>Now let&rsquo;s say that we swap the roles of the LAGs, i.e. we connect
+<code>lag1</code> to the bridge and keep <code>lag0</code> as a standalone interface.</p><p>At this point, the bridge will want to add a static entry for the MAC
+address of <code>lag1</code>, pointing towards the CPU port. It will then find
+the existing dynamic entry from the previous configuration, override
+the port and state and the write it back to the ATU. But since the
+trunk bit is not cleared, you now end up with a static entry pointing
+towards a non-existing LAG <code>0x400</code> (for the common case where the CPU
+port is 11).</p><p><strong>Conclusion</strong>: The trunk bit must always be cleared when updating an
+existing ATU entry.</p><h2 id=suggested-solution-2>Suggested Solution</h2><p>Do that.</p></section><section><footer class=page-footer><hr><div class=previous-post style=display:inline-block></div><div class=next-post , style=display:inline-block;float:right></div><ul class=page-footer-menu><li><a href=https://twitter.com/776b7a><i class="fab fa-twitter fa-lg"></i></a></li><li><a href=https://github.com/wkz><i class="fab fa-github fa-lg"></i></a></li></ul><div class=copyright><p>&copy; 2022
+Tobias Waldekranz.
+All rights reserved.</p></div></footer></section></article></div></body></html>
