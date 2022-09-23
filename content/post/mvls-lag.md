@@ -69,14 +69,30 @@ on the Opal+.
 
 ## Suggested Solution
 
-Opportunistically enable hashing until a configuration is encountered
+~~Opportunistically enable hashing until a configuration is encountered
 which prevents it. As a first step, you could disable hashing as soon
-as a cross-chip LAG is detected.
+as a cross-chip LAG is detected.~~
 
-To support even more cases, you could also keep hashing enabled as
+~~To support even more cases, you could also keep hashing enabled as
 long as all cross-chip LAGs are setup between compatible chips. This
 would require some more information from Marvell though, i.e. the
-groups of chips using the same hash function.
+groups of chips using the same hash function.~~
+
+**UPDATE:** It turns out that this issue is a side-effect of a silicon
+bug in the Agate, for which an easy workaround exists. An undocumented
+field{{< sidenote>}}`Global1/Reg10/Bit0-1`{{< /sidenote >}} has an
+incorrect value when the Agate comes out of reset.
+
+In more recent chips of the same family, this field specifies the hash
+mode to use for ATU bucket selection, where `1` is "Default" and `3`
+is "Direct" (`0` and `2` are reserved).
+
+The Agate has a reset value of `0` whereas Peridot and Amethyst both
+reset to `1`. Setting the the value to `1` resolves the issue.
+
+Thus, it appears that the field in question, in addition to
+influencing the hash function used for ATU bucket selection, also
+affects the hash function used for LAG member selection.
 
 
 # DSA Tag Trunk Bit Override
